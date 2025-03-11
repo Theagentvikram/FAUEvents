@@ -155,63 +155,11 @@ const MapPage: React.FC = () => {
             FAU_BOUNDS.north
           ]
         });
-        
+
         initializeMap.addControl(directions, 'top-left');
         directionsRef.current = directions;
 
-        // Add event markers with custom styling and click handlers
-        mockEvents.forEach(event => {
-          // Create custom marker element
-          const markerEl = document.createElement('div');
-          markerEl.className = 'marker-glow';
-          
-          const popup = new mapboxgl.Popup({ offset: 25 })
-            .setHTML(`
-              <div class="text-center">
-                <h3 class="font-semibold text-lg">${event.title}</h3>
-                <p class="text-sm text-gray-600">${event.date} • ${event.time}</p>
-                <button class="get-directions-btn bg-blue-600 text-white px-3 py-1 rounded mt-2 hover:bg-blue-700">
-                  Get Directions
-                </button>
-                <a href="/events/${event.id}" class="inline-block mt-2 text-blue-600 hover:text-blue-800 ml-2">
-                  View Details
-                </a>
-              </div>
-            `);
-
-          const marker = new mapboxgl.Marker({
-            element: markerEl
-          })
-            .setLngLat([event.coordinates[1], event.coordinates[0]])
-            .setPopup(popup)
-            .addTo(initializeMap);
-
-          // Add click handler for the marker
-          markerEl.addEventListener('click', () => {
-            // If we have user location, set it as the starting point
-            if (userLocation && directionsRef.current) {
-              directionsRef.current.setOrigin(userLocation);
-              directionsRef.current.setDestination([event.coordinates[1], event.coordinates[0]]);
-            }
-          });
-
-          // Add click handler for the "Get Directions" button
-          popup.on('open', () => {
-            const btn = document.querySelector('.get-directions-btn');
-            if (btn) {
-              btn.addEventListener('click', () => {
-                if (directionsRef.current) {
-                  if (userLocation) {
-                    directionsRef.current.setOrigin(userLocation);
-                  }
-                  directionsRef.current.setDestination([event.coordinates[1], event.coordinates[0]]);
-                }
-              });
-            }
-          });
-        });
-
-        // Get user's location
+        // Get user's location first before adding markers
         if (navigator.geolocation) {
           navigator.geolocation.getCurrentPosition(
             (position) => {
@@ -220,6 +168,11 @@ const MapPage: React.FC = () => {
                 position.coords.latitude
               ];
               setUserLocation(userCoords);
+
+              // Set user's location as the default origin in directions
+              if (directionsRef.current) {
+                directionsRef.current.setOrigin(userCoords);
+              }
 
               // Create custom marker element for user location
               const userMarkerEl = document.createElement('div');
@@ -236,9 +189,54 @@ const MapPage: React.FC = () => {
                 .setLngLat(userCoords)
                 .setPopup(new mapboxgl.Popup().setHTML('<p class="font-semibold">Your Location</p>'))
                 .addTo(initializeMap);
+
+              // Now add event markers with directions functionality
+              mockEvents.forEach(event => {
+                const markerEl = document.createElement('div');
+                markerEl.className = 'marker-glow';
+
+                const popup = new mapboxgl.Popup({ offset: 25 })
+                  .setHTML(`
+                    <div class="text-center">
+                      <h3 class="font-semibold text-lg">${event.title}</h3>
+                      <p class="text-sm text-gray-600">${event.date} • ${event.time}</p>
+                      <button class="get-directions-btn bg-blue-600 text-white px-3 py-1 rounded mt-2 hover:bg-blue-700">
+                        Get Directions
+                      </button>
+                      <a href="/events/${event.id}" class="inline-block mt-2 text-blue-600 hover:text-blue-800 ml-2">
+                        View Details
+                      </a>
+                    </div>
+                  `);
+
+                const marker = new mapboxgl.Marker({
+                  element: markerEl
+                })
+                  .setLngLat([event.coordinates[1], event.coordinates[0]])
+                  .setPopup(popup)
+                  .addTo(initializeMap);
+
+                // Add click handlers for both marker and Get Directions button
+                const handleGetDirections = () => {
+                  if (directionsRef.current) {
+                    // Always set origin to user's current location
+                    directionsRef.current.setOrigin(userCoords);
+                    directionsRef.current.setDestination([event.coordinates[1], event.coordinates[0]]);
+                  }
+                };
+
+                markerEl.addEventListener('click', handleGetDirections);
+                popup.on('open', () => {
+                  const btn = document.querySelector('.get-directions-btn');
+                  if (btn) {
+                    btn.addEventListener('click', handleGetDirections);
+                  }
+                });
+              });
             },
             (error) => {
               console.error("Error getting location:", error);
+              setMapError('Unable to get your location. Please enable location services and refresh the page.');
             }
           );
         }
@@ -256,7 +254,7 @@ const MapPage: React.FC = () => {
   return (
     <div className="container mx-auto px-4 py-8">
       <h1 className="text-3xl font-bold mb-6">FAU Campus Map</h1>
-      
+
       {mapError ? (
         <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded mb-4">
           {mapError}
@@ -269,28 +267,28 @@ const MapPage: React.FC = () => {
               {userLocation ? " Your current location is shown in blue." : " Enable location services to see your position."}
             </p>
           </div>
-          
+
           <div className="h-[600px] rounded-lg overflow-hidden shadow-lg relative">
             <div ref={mapContainer} className="absolute inset-0" />
           </div>
         </>
       )}
-      
+
       <div className="mt-8 grid md:grid-cols-2 gap-6">
         <div className="bg-white p-6 rounded-lg shadow-md">
           <h2 className="text-xl font-semibold mb-4">Campus Events</h2>
           <div className="space-y-4">
             {mockEvents.slice(0, 3).map(event => (
               <div key={event.id} className="flex items-start border-b border-gray-100 pb-4">
-                <img 
-                  src={event.image} 
+                <img
+                  src={event.image}
                   alt={event.title}
                   className="w-16 h-16 object-cover rounded mr-4"
                 />
                 <div>
                   <h3 className="font-semibold">{event.title}</h3>
                   <p className="text-sm text-gray-600">{event.date} • {event.location}</p>
-                  <a 
+                  <a
                     href={`/events/${event.id}`}
                     className="text-sm text-blue-600 hover:text-blue-800"
                   >
@@ -301,7 +299,7 @@ const MapPage: React.FC = () => {
             ))}
           </div>
         </div>
-        
+
         <div className="bg-white p-6 rounded-lg shadow-md">
           <h2 className="text-xl font-semibold mb-4">Navigation Tips</h2>
           <p className="text-gray-700 mb-4">
