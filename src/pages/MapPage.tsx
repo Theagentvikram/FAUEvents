@@ -45,6 +45,7 @@ const MapPage: React.FC = () => {
           cursor: pointer;
           animation: pulse 2s infinite;
           box-shadow: 0 0 0 rgba(205, 16, 65, 0.4);
+          position: relative;
         }
 
         @keyframes pulse {
@@ -136,6 +137,51 @@ const MapPage: React.FC = () => {
         // Add navigation controls
         initializeMap.addControl(new mapboxgl.NavigationControl(), 'top-right');
 
+        // Function to handle getting directions
+        const handleGetDirections = (eventCoords: [number, number]) => {
+          if (!userLocation) {
+            // If we don't have user location, try to get it first
+            navigator.geolocation.getCurrentPosition(
+              (position) => {
+                const userCoords: [number, number] = [
+                  position.coords.longitude,
+                  position.coords.latitude
+                ];
+                setUserLocation(userCoords);
+                if (map.current) {
+                  updateUserLocationMarker(userCoords, map.current);
+                }
+                // Wait a bit for the directions control to be ready
+                setTimeout(() => {
+                  if (directionsRef.current) {
+                    directionsRef.current.setOrigin(userCoords);
+                    directionsRef.current.setDestination(eventCoords);
+                  }
+                }, 100);
+              },
+              (error) => {
+                console.error("Error getting location:", error);
+                alert('Please enable location services to get directions');
+              },
+              {
+                enableHighAccuracy: true,
+                timeout: 5000,
+                maximumAge: 0
+              }
+            );
+          } else {
+            // If we already have user location, use it directly
+            if (directionsRef.current) {
+              // Convert coordinates to string format that Mapbox expects
+              const originStr = `${userLocation[0]},${userLocation[1]}`;
+              const destStr = `${eventCoords[0]},${eventCoords[1]}`;
+              
+              directionsRef.current.setOrigin(originStr);
+              directionsRef.current.setDestination(destStr);
+            }
+          }
+        };
+
         // Add directions control
         const directions = new MapboxDirections({
           accessToken: mapboxgl.accessToken,
@@ -154,6 +200,11 @@ const MapPage: React.FC = () => {
             FAU_BOUNDS.east,
             FAU_BOUNDS.north
           ]
+        });
+
+        // Wait for directions control to be ready
+        directions.on('load', () => {
+          console.log('Directions control ready');
         });
         
         initializeMap.addControl(directions, 'top-left');
@@ -188,11 +239,7 @@ const MapPage: React.FC = () => {
 
           // Add click handler for the marker
           markerEl.addEventListener('click', () => {
-            // If we have user location, set it as the starting point
-            if (userLocation && directionsRef.current) {
-              directionsRef.current.setOrigin(userLocation);
-              directionsRef.current.setDestination([event.coordinates[1], event.coordinates[0]]);
-            }
+            handleGetDirections([event.coordinates[1], event.coordinates[0]]);
           });
 
           // Add click handler for the "Get Directions" button
@@ -200,47 +247,55 @@ const MapPage: React.FC = () => {
             const btn = document.querySelector('.get-directions-btn');
             if (btn) {
               btn.addEventListener('click', () => {
-                if (directionsRef.current) {
-                  if (userLocation) {
-                    directionsRef.current.setOrigin(userLocation);
-                  }
-                  directionsRef.current.setDestination([event.coordinates[1], event.coordinates[0]]);
-                }
+                handleGetDirections([event.coordinates[1], event.coordinates[0]]);
               });
             }
           });
         });
 
-        // Get user's location
+        // Get initial user location and watch for changes
         if (navigator.geolocation) {
+          const handlePositionUpdate = (position: GeolocationPosition) => {
+            const userCoords: [number, number] = [
+              position.coords.longitude,
+              position.coords.latitude
+            ];
+            setUserLocation(userCoords);
+            if (map.current) {
+              updateUserLocationMarker(userCoords, map.current);
+            }
+          };
+
+          // Get initial position
           navigator.geolocation.getCurrentPosition(
-            (position) => {
-              const userCoords: [number, number] = [
-                position.coords.longitude,
-                position.coords.latitude
-              ];
-              setUserLocation(userCoords);
-
-              // Create custom marker element for user location
-              const userMarkerEl = document.createElement('div');
-              userMarkerEl.style.width = '25px';
-              userMarkerEl.style.height = '25px';
-              userMarkerEl.style.backgroundColor = '#004B8D';
-              userMarkerEl.style.borderRadius = '50%';
-              userMarkerEl.style.border = '3px solid white';
-              userMarkerEl.style.boxShadow = '0 0 10px rgba(0, 75, 141, 0.5)';
-
-              new mapboxgl.Marker({
-                element: userMarkerEl
-              })
-                .setLngLat(userCoords)
-                .setPopup(new mapboxgl.Popup().setHTML('<p class="font-semibold">Your Location</p>'))
-                .addTo(initializeMap);
-            },
+            handlePositionUpdate,
             (error) => {
               console.error("Error getting location:", error);
+            },
+            {
+              enableHighAccuracy: true,
+              timeout: 5000,
+              maximumAge: 0
             }
           );
+
+          // Watch for location changes
+          const watchId = navigator.geolocation.watchPosition(
+            handlePositionUpdate,
+            (error) => {
+              console.error("Error watching location:", error);
+            },
+            {
+              enableHighAccuracy: true,
+              timeout: 5000,
+              maximumAge: 0
+            }
+          );
+
+          // Cleanup watch on unmount
+          return () => {
+            navigator.geolocation.clearWatch(watchId);
+          };
         }
       });
 
