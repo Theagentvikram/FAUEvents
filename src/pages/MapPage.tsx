@@ -2,7 +2,6 @@ import React, { useEffect, useRef, useState } from 'react';
 import 'mapbox-gl/dist/mapbox-gl.css';
 import '@mapbox/mapbox-gl-directions/dist/mapbox-gl-directions.css';
 import mapboxgl from 'mapbox-gl';
-import MapboxDirections from '@mapbox/mapbox-gl-directions/dist/mapbox-gl-directions';
 import { mockEvents } from '../data/mockEvents';
 
 // Mapbox access token
@@ -19,12 +18,88 @@ const FAU_BOUNDS = {
 const MapPage: React.FC = () => {
   const mapContainer = useRef<HTMLDivElement>(null);
   const map = useRef<mapboxgl.Map | null>(null);
-  const directionsRef = useRef<MapboxDirections | null>(null);
   const [mapError, setMapError] = useState<string | null>(null);
   const [userLocation, setUserLocation] = useState<[number, number] | null>(null);
+  const [directions, setDirections] = useState<{
+    duration: number;
+    distance: number;
+    steps: Array<{
+      instruction: string;
+      distance: number;
+    }>;
+  } | null>(null);
 
   // FAU Boca Raton coordinates
   const fauCenter: [number, number] = [-80.1020, 26.3721];
+
+  const getDirections = async (start: [number, number], end: [number, number]) => {
+    try {
+      const response = await fetch(
+        `https://api.mapbox.com/directions/v5/mapbox/walking/${start[0]},${start[1]};${end[0]},${end[1]}?steps=true&geometries=geojson&access_token=${mapboxgl.accessToken}`
+      );
+      const data = await response.json();
+      
+      if (data.code !== 'Ok') {
+        throw new Error('Unable to find directions');
+      }
+
+      const route = data.routes[0];
+      setDirections({
+        duration: Math.round(route.duration / 60), // Convert to minutes
+        distance: Math.round(route.distance * 0.000621371 * 100) / 100, // Convert to miles
+        steps: route.legs[0].steps.map((step: any) => ({
+          instruction: step.maneuver.instruction,
+          distance: Math.round(step.distance * 3.28084) // Convert to feet
+        }))
+      });
+
+      // Draw the route on the map
+      if (map.current) {
+        // Remove existing route if any
+        if (map.current.getSource('route')) {
+          map.current.removeLayer('route');
+          map.current.removeSource('route');
+        }
+
+        map.current.addSource('route', {
+          type: 'geojson',
+          data: {
+            type: 'Feature',
+            properties: {},
+            geometry: route.geometry
+          }
+        });
+
+        map.current.addLayer({
+          id: 'route',
+          type: 'line',
+          source: 'route',
+          layout: {
+            'line-join': 'round',
+            'line-cap': 'round'
+          },
+          paint: {
+            'line-color': '#4B9DFF',
+            'line-width': 4,
+            'line-opacity': 0.8
+          }
+        });
+
+        // Fit the map to show the full route
+        const coordinates = route.geometry.coordinates;
+        const bounds = coordinates.reduce((bounds: mapboxgl.LngLatBounds, coord: number[]) => {
+          return bounds.extend([coord[0], coord[1]]);
+        }, new mapboxgl.LngLatBounds(coordinates[0], coordinates[0]));
+
+        map.current.fitBounds(bounds, {
+          padding: 50
+        });
+      }
+    } catch (error) {
+      console.error('Error getting directions:', error);
+      setMapError('Unable to get directions. Please try again.');
+    }
+  };
 
   useEffect(() => {
     if (!mapContainer.current) return;
@@ -70,6 +145,39 @@ const MapPage: React.FC = () => {
           background-color: white;
           border-radius: 50%;
         }
+
+        .directions-panel {
+          background: white;
+          padding: 16px;
+          border-radius: 8px;
+          box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+          max-height: 400px;
+          overflow-y: auto;
+        }
+
+        .direction-step {
+          padding: 8px 0;
+          border-bottom: 1px solid #eee;
+          display: flex;
+          align-items: center;
+          gap: 12px;
+        }
+
+        .direction-step:last-child {
+          border-bottom: none;
+        }
+
+        .direction-icon {
+          width: 24px;
+          height: 24px;
+          background: #4B9DFF;
+          border-radius: 50%;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          color: white;
+          font-size: 14px;
+        }
       `;
       document.head.appendChild(style);
 
@@ -81,12 +189,14 @@ const MapPage: React.FC = () => {
         minZoom: 14.5,
         maxZoom: 18,
         maxBounds: [
-          [FAU_BOUNDS.west, FAU_BOUNDS.south], // Southwest coordinates
-          [FAU_BOUNDS.east, FAU_BOUNDS.north]  // Northeast coordinates
+          [FAU_BOUNDS.west, FAU_BOUNDS.south],
+          [FAU_BOUNDS.east, FAU_BOUNDS.north]
         ]
       });
 
       map.current = initializeMap;
+
+      initializeMap.addControl(new mapboxgl.NavigationControl(), 'top-right');
 
       initializeMap.on('error', (e) => {
         console.error('Map error:', e);
@@ -133,32 +243,6 @@ const MapPage: React.FC = () => {
           }
         });
 
-        // Add navigation controls
-        initializeMap.addControl(new mapboxgl.NavigationControl(), 'top-right');
-
-        // Add directions control
-        const directions = new MapboxDirections({
-          accessToken: mapboxgl.accessToken,
-          unit: 'imperial',
-          profile: 'mapbox/walking',
-          interactive: true,
-          controls: {
-            inputs: true,
-            instructions: true,
-            profileSwitcher: false
-          },
-          flyTo: false,
-          bbox: [
-            FAU_BOUNDS.west,
-            FAU_BOUNDS.south,
-            FAU_BOUNDS.east,
-            FAU_BOUNDS.north
-          ]
-        });
-
-        initializeMap.addControl(directions, 'top-left');
-        directionsRef.current = directions;
-
         // Get user's location first before adding markers
         if (navigator.geolocation) {
           navigator.geolocation.getCurrentPosition(
@@ -169,19 +253,14 @@ const MapPage: React.FC = () => {
               ];
               setUserLocation(userCoords);
 
-              // Set user's location as the default origin in directions
-              if (directionsRef.current) {
-                directionsRef.current.setOrigin(userCoords);
-              }
-
               // Create custom marker element for user location
               const userMarkerEl = document.createElement('div');
               userMarkerEl.style.width = '25px';
               userMarkerEl.style.height = '25px';
-              userMarkerEl.style.backgroundColor = '#004B8D';
+              userMarkerEl.style.backgroundColor = '#4B9DFF';
               userMarkerEl.style.borderRadius = '50%';
               userMarkerEl.style.border = '3px solid white';
-              userMarkerEl.style.boxShadow = '0 0 10px rgba(0, 75, 141, 0.5)';
+              userMarkerEl.style.boxShadow = '0 0 10px rgba(75, 157, 255, 0.5)';
 
               new mapboxgl.Marker({
                 element: userMarkerEl
@@ -194,7 +273,7 @@ const MapPage: React.FC = () => {
               mockEvents.forEach(event => {
                 const markerEl = document.createElement('div');
                 markerEl.className = 'marker-glow';
-
+                
                 const popup = new mapboxgl.Popup({ offset: 25 })
                   .setHTML(`
                     <div class="text-center">
@@ -218,11 +297,7 @@ const MapPage: React.FC = () => {
 
                 // Add click handlers for both marker and Get Directions button
                 const handleGetDirections = () => {
-                  if (directionsRef.current) {
-                    // Always set origin to user's current location
-                    directionsRef.current.setOrigin(userCoords);
-                    directionsRef.current.setDestination([event.coordinates[1], event.coordinates[0]]);
-                  }
+                  getDirections(userCoords, [event.coordinates[1], event.coordinates[0]]);
                 };
 
                 markerEl.addEventListener('click', handleGetDirections);
@@ -268,51 +343,59 @@ const MapPage: React.FC = () => {
             </p>
           </div>
 
-          <div className="h-[600px] rounded-lg overflow-hidden shadow-lg relative">
-            <div ref={mapContainer} className="absolute inset-0" />
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
+            <div className="md:col-span-2">
+              <div className="h-[600px] rounded-lg overflow-hidden shadow-lg relative">
+                <div ref={mapContainer} className="absolute inset-0" />
+              </div>
+            </div>
+
+            <div>
+              {directions && (
+                <div className="directions-panel">
+                  <div className="mb-4">
+                    <h3 className="text-lg font-semibold mb-2">Walking Directions</h3>
+                    <p className="text-sm text-gray-600">
+                      {directions.duration} min ({directions.distance} miles)
+                    </p>
+                  </div>
+                  
+                  <div className="space-y-2">
+                    {directions.steps.map((step, index) => (
+                      <div key={index} className="direction-step">
+                        <div className="direction-icon">
+                          {index === 0 ? 'A' : index === directions.steps.length - 1 ? 'B' : index}
+                        </div>
+                        <div>
+                          <p>{step.instruction}</p>
+                          {step.distance > 0 && (
+                            <p className="text-sm text-gray-600">{step.distance} ft</p>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {!directions && (
+                <div className="bg-white p-6 rounded-lg shadow-md">
+                  <h2 className="text-xl font-semibold mb-4">Navigation Tips</h2>
+                  <p className="text-gray-700 mb-4">
+                    How to use the campus map:
+                  </p>
+                  <ul className="list-disc list-inside text-gray-700 space-y-2">
+                    <li>Click any glowing red marker to view event details</li>
+                    <li>Click "Get Directions" to get walking directions from your location</li>
+                    <li>Your position is shown with a blue marker when location is enabled</li>
+                    <li>Follow the blue line on the map for your walking route</li>
+                  </ul>
+                </div>
+              )}
+            </div>
           </div>
         </>
       )}
-
-      <div className="mt-8 grid md:grid-cols-2 gap-6">
-        <div className="bg-white p-6 rounded-lg shadow-md">
-          <h2 className="text-xl font-semibold mb-4">Campus Events</h2>
-          <div className="space-y-4">
-            {mockEvents.slice(0, 3).map(event => (
-              <div key={event.id} className="flex items-start border-b border-gray-100 pb-4">
-                <img
-                  src={event.image}
-                  alt={event.title}
-                  className="w-16 h-16 object-cover rounded mr-4"
-                />
-                <div>
-                  <h3 className="font-semibold">{event.title}</h3>
-                  <p className="text-sm text-gray-600">{event.date} • {event.location}</p>
-                  <a
-                    href={`/events/${event.id}`}
-                    className="text-sm text-blue-600 hover:text-blue-800"
-                  >
-                    View Details
-                  </a>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        <div className="bg-white p-6 rounded-lg shadow-md">
-          <h2 className="text-xl font-semibold mb-4">Navigation Tips</h2>
-          <p className="text-gray-700 mb-4">
-            How to use the campus map:
-          </p>
-          <ul className="list-disc list-inside text-gray-700 space-y-2">
-            <li>Click any glowing red marker to view event details</li>
-            <li>Click "Get Directions" to get walking directions from your location</li>
-            <li>Use the navigation panel to modify routes or enter custom locations</li>
-            <li>Your position is shown with a blue marker when location is enabled</li>
-          </ul>
-        </div>
-      </div>
     </div>
   );
 };
